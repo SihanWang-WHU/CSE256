@@ -2,10 +2,13 @@ import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import os
-
+import nltk
+nltk.download('punkt')
+from transformer import TransformerEncoder, FeedforwardClassifier
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
-
+import torch.optim as optim
+import torch.nn as nn
 
 seed = 42
 
@@ -84,6 +87,7 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
     """
     decoderLMmodel.eval()
     losses= []
+    total_loss = 0
     for X, Y in data_loader:
         X, Y = X.to(device), Y.to(device)
         loss = decoderLMmodel(X, Y) # your model should be computing the cross entropy loss
@@ -102,28 +106,61 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
 def main():
 
     print("Loading data and creating tokenizer ...")
-    texts = load_texts('speechesdataset')
+    texts = load_texts('../speechesdataset')
     tokenizer = SimpleTokenizer(' '.join(texts)) # create a tokenizer from the data
     print("Vocabulary size is", tokenizer.vocab_size)
+    vocab_size = tokenizer.vocab_size
 
-    train_CLS_dataset = SpeechesClassificationDataset(tokenizer, "speechesdataset/train_CLS.tsv")
+    train_CLS_dataset = SpeechesClassificationDataset(tokenizer, "../speechesdataset/train_CLS.tsv")
     train_CLS_loader = DataLoader(train_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
-
+    val_CLS_dataset = SpeechesClassificationDataset(tokenizer, "../speechesdataset/test_CLS.tsv")
+    val_CLS_loader = DataLoader(val_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
   
-    inputfile = "speechesdataset/train_LM.txt"
+    inputfile = "../speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
     train_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
     train_LM_loader = DataLoader(train_LM_dataset, batch_size=batch_size, shuffle=True)
 
+     ################################# Create the encoder and classifier models #################################
      # for the classification  task, you will train for a fixed number of epochs like this:
+    print("Creating encoder and classifier models ...")
+    encoder = TransformerEncoder(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
+    classifier = FeedforwardClassifier(n_input, n_hidden, n_output).to(device)
+
+    loss_function = nn.NLLLoss()
+    optimizer = optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=learning_rate)
     for epoch in range(epochs_CLS):
-        for xb, yb in train_CLS_loader:
+        total_loss = 0
+        for xb, yb in train_CLS_loader:  # Assume train_CLS_loader is defined and contains input IDs and labels
             xb, yb = xb.to(device), yb.to(device)
-            # CLS training code here
 
+            # Reset gradient
+            optimizer.zero_grad()
 
+            # Forward pass through encoder and classifier
+            embeddings = encoder(xb)  # Pass the input through the encoder
+            predictions = classifier(embeddings)  # Pass the encoder output through the classifier
+
+            # Compute loss
+            loss = loss_function(predictions, yb)
+            total_loss += loss.item()
+
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+
+        # Optionally print average loss per epoch
+        print(f'Epoch {epoch + 1}, Average Loss: {total_loss / len(train_CLS_loader)}')
+
+        # Optionally evaluate and print accuracy on a validation set every epoch
+        if (epoch + 1) % 5 == 0:
+            val_accuracy = compute_classifier_accuracy(classifier, val_CLS_loader)  # Assume val_CLS_loader is defined
+            print(f'Validation Accuracy after Epoch {epoch + 1}: {val_accuracy}%')
+
+    ################################# Create the encoder and decoder models #################################
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
+    print("Creating encoder and decoder models ...")
     for i, (xb, yb) in enumerate(train_LM_loader):
         if i >= max_iters:
             break
