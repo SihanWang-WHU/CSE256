@@ -4,11 +4,14 @@ from torch.nn.utils.rnn import pad_sequence
 import os
 import nltk
 nltk.download('punkt')
-from transformer import TransformerEncoder, FeedforwardClassifier
+
+
+from transformer_encoder import TransformerEncoder, FeedforwardClassifier, UnifiedClassifier
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
 import torch.optim as optim
 import torch.nn as nn
+from utilities import Utilities
 
 seed = 42
 
@@ -115,7 +118,8 @@ def main():
     train_CLS_loader = DataLoader(train_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
     val_CLS_dataset = SpeechesClassificationDataset(tokenizer, "../speechesdataset/test_CLS.tsv")
     val_CLS_loader = DataLoader(val_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
-  
+    sentence_for_sanity_check = "That is in Israel's interest, Palestine's interest, America's interest, and the world's interest."
+
     inputfile = "../speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
@@ -127,7 +131,7 @@ def main():
     print("Creating encoder and classifier models ...")
     encoder = TransformerEncoder(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
     classifier = FeedforwardClassifier(n_input, n_hidden, n_output).to(device)
-
+    unified_classifier = UnifiedClassifier(encoder, classifier).to(device)
     loss_function = nn.NLLLoss()
     optimizer = optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=learning_rate)
     for epoch in range(epochs_CLS):
@@ -138,9 +142,7 @@ def main():
             # Reset gradient
             optimizer.zero_grad()
 
-            # Forward pass through encoder and classifier
-            embeddings = encoder(xb)  # Pass the input through the encoder
-            predictions = classifier(embeddings)  # Pass the encoder output through the classifier
+            predictions = unified_classifier(xb)  # Pass the embeddings through the classifier
 
             # Compute loss
             loss = loss_function(predictions, yb)
@@ -155,8 +157,14 @@ def main():
 
         # Optionally evaluate and print accuracy on a validation set every epoch
         if (epoch + 1) % 5 == 0:
-            val_accuracy = compute_classifier_accuracy(classifier, val_CLS_loader)  # Assume val_CLS_loader is defined
+            val_accuracy = compute_classifier_accuracy(unified_classifier, val_CLS_loader)  # Assume val_CLS_loader is defined
             print(f'Validation Accuracy after Epoch {epoch + 1}: {val_accuracy}%')
+
+    # Sanity check
+    print('sanity check ...')
+    unified_classifier = unified_classifier.to('cpu')
+    utilities = Utilities(tokenizer, unified_classifier.encoder)
+    utilities.sanity_check(sentence_for_sanity_check, block_size)
 
     ################################# Create the encoder and decoder models #################################
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
