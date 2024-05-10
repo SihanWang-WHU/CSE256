@@ -6,7 +6,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
 nltk.download('punkt')
-
+from tqdm import tqdm
 from transformer_decoder import GPTLanguageModel
 
 from tokenizer import SimpleTokenizer
@@ -29,7 +29,7 @@ n_embd = 64  # Embedding dimension
 n_head = 2  # Number of attention heads
 n_layer = 4  # Number of transformer layers
 
-eval_interval = 10  # How often to evaluate train and test perplexity during training
+eval_interval = 100  # How often to evaluate train and test perplexity during training
 max_iters = 500  # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
 eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
 
@@ -96,7 +96,7 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
     total_loss = 0
     for X, Y in data_loader:
         X, Y = X.to(device), Y.to(device)
-        loss = decoderLMmodel(X, Y)  # your model should be computing the cross entropy loss
+        _, loss = decoderLMmodel(X, Y)  # your model should be computing the cross entropy loss
         losses.append(loss.item())
         total_loss += loss.item()
         if len(losses) >= eval_iters: break
@@ -196,14 +196,22 @@ def main():
             total_loss += loss.item() * xb.size(0)
         return total_loss / len(loader.dataset)
 
-    for epoch in range(max_iters):
+    # add a bar for the progress using tqdm
+    for epoch in tqdm(range(max_iters)):
         train_loss = run_epoch(train_LM_loader, is_train=True)
         if epoch % eval_interval == 0:
+            print('/n')
             print(f'Epoch {epoch}, Train Loss: {train_loss:.4f}')
+            # compute perplexity on the training and validation set
+            train_perplexity = compute_perplexity(Decoder, train_LM_loader, eval_iters)
+            val_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_iters)
+            print(f'Epoch {epoch}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {val_perplexity:.4f}')
 
         if epoch % eval_iters == 0:
             test_loss = run_epoch(val_LM_loader, is_train=False)
             print(f'Epoch {epoch}, Test Loss: {test_loss:.4f}')
+            test_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_iters)
+            print('/n' + f'Epoch {epoch}, Test Perplexity: {test_perplexity:.4f}')
 
 
 if __name__ == "__main__":
