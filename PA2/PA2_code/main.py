@@ -29,9 +29,9 @@ n_embd = 64  # Embedding dimension
 n_head = 2  # Number of attention heads
 n_layer = 4  # Number of transformer layers
 
-eval_interval = 100  # How often to evaluate train and test perplexity during training
+eval_interval = 10  # How often to evaluate train and test perplexity during training
 max_iters = 500  # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
-eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
+eval_iters = 20  # Number of iterations to evaluate perplexity on the test set
 
 ## classifier training hyperparameters. It is a simple 1 hidden layer feedforward network, with input
 ## size of 64, hidden size of 50 and output size of 3.
@@ -211,7 +211,8 @@ def main():
             test_loss = run_epoch(val_LM_loader, is_train=False)
             print(f'Epoch {epoch}, Test Loss: {test_loss:.4f}')
             test_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_iters)
-            print('/n' + f'Epoch {epoch}, Test Perplexity: {test_perplexity:.4f}')
+            print('/n')
+            print(f'Epoch {epoch}, Test Perplexity: {test_perplexity:.4f}')
 
 
 if __name__ == "__main__":

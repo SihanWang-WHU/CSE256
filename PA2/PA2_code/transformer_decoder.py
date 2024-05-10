@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -11,24 +13,30 @@ class Head(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.register_buffer('mask', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # input of size (batch, time-step, channels)
-        # output of size (batch, time-step, head size)
         B, T, C = x.shape
-        k = self.key(x)  # (B,T,hs)
-        q = self.query(x)  # (B,T,hs)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5  # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
-        wei = F.softmax(wei, dim=-1)  # (B, T, T)
-        wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x)  # (B,T,hs)
-        out = wei @ v  # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+
+        # Compute scaled dot-product attention scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) * (1. / math.sqrt(k.size(-1)))
+
+        # Apply the mask to the scores
+        scores = scores.masked_fill(self.mask[:, :, :T, :T] == 0, float('-inf'))
+
+        # Apply softmax to get the probabilities
+        attn = F.softmax(scores, dim=-1)
+
+        # Apply dropout to the attention scores
+        attn = self.dropout(attn)
+
+        # Multiply the attention scores with the values
+        out = torch.matmul(attn, v)
         return out
 
 
