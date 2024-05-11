@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -13,30 +11,21 @@ class Head(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('mask', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
-
-        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head size)
         B, T, C = x.shape
-        k = self.key(x)
-        q = self.query(x)
-        v = self.value(x)
-
-        # Compute scaled dot-product attention scores
-        scores = torch.matmul(q, k.transpose(-2, -1)) * (1. / math.sqrt(k.size(-1)))
-
-        # Apply the mask to the scores
-        scores = scores.masked_fill(self.mask[:, :, :T, :T] == 0, float('-inf'))
-
-        # Apply softmax to get the probabilities
-        attn = F.softmax(scores, dim=-1)
-
-        # Apply dropout to the attention scores
-        attn = self.dropout(attn)
-
-        # Multiply the attention scores with the values
-        out = torch.matmul(attn, v)
+        k = self.key(x)  # (B,T,hs)
+        q = self.query(x)  # (B,T,hs)
+        # compute attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5  # (B, T, hs) @ (B, hs, T) -> (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
+        wei = F.softmax(wei, dim=-1)  # (B, T, T)
+        # perform the weighted aggregation of the values
+        v = self.value(x)  # (B,T,hs)
+        out = wei @ v  # (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
 
 
@@ -47,11 +36,9 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size, n_embd, block_size) for _ in range(num_heads)])
         self.proj = nn.Linear(head_size * num_heads, n_embd)
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
         return out
 
 
@@ -61,10 +48,9 @@ class FeedFoward(nn.Module):
     def __init__(self, n_embd, dropout=0.2):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, 100),
+            nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
-            nn.Linear(100, n_embd),
-            nn.Dropout(dropout),
+            nn.Linear(4 * n_embd, n_embd)
         )
 
     def forward(self, x):
@@ -94,17 +80,11 @@ class GPTLanguageModel(nn.Module):
     def __init__(self, vocab_size, n_embd, n_head, n_layer, block_size):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.vocab_size = vocab_size
-        self.n_embd = n_embd
-        self.n_head = n_head
-        self.n_layer = n_layer
-        self.block_size = block_size
-
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head, block_size) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd)  # final layer norm
-        self.lm_head = nn.Linear(n_embd, vocab_size)  # language model head
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
         # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
@@ -122,7 +102,9 @@ class GPTLanguageModel(nn.Module):
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx)  # (B,T,C)
-        pos_emb = nn.Parameter(torch.zeros(1, self.block_size, self.n_embd)).to('cuda' if idx.is_cuda else 'cpu')
+        # define the device
+        pos_emb = self.position_embedding_table(
+            torch.arange(T, device="cuda" if torch.cuda.is_available() else "cpu"))  # (T,C)
         x = tok_emb + pos_emb  # (B,T,C)
         x = self.blocks(x)  # (B,T,C)
         x = self.ln_f(x)  # (B,T,C)
@@ -138,11 +120,11 @@ class GPTLanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens):
+    def generate(self, idx, max_new_tokens, block_size):
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
-            idx_cond = idx[:, -self.block_size:]
+            idx_cond = idx[:, -block_size:]
             # get the predictions
             logits, loss = self(idx_cond)
             # focus only on the last time step

@@ -6,12 +6,10 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
 nltk.download('punkt')
-from tqdm import tqdm
-from transformer_decoder import GPTLanguageModel
 
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
-import torch.optim as optim
+from transformer_decoder import GPTLanguageModel
 import numpy as np
 
 seed = 42
@@ -109,6 +107,28 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
     return perplexity
 
 
+def train_language_model(model, train_loader, val_loader, max_iters, eval_interval):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+    for iterations in range(max_iters):
+        train_iter = iter(train_loader)
+        xb, yb = next(train_iter)
+
+        xb = xb.to(device)
+        yb = yb.to(device)
+
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        # if the iteration is a multiple of eval_interval, print the perplexity
+        # on the training and validation data
+        if iterations % eval_interval == 0 or iterations == max_iters - 1:
+            train_perplexity = compute_perplexity(model, train_loader, eval_interval)
+            val_perplexity = compute_perplexity(model, val_loader, eval_interval)
+            print(f'Epoch {iterations}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {val_perplexity:.4f}')
+
+
 def main():
     print("Loading data and creating tokenizer ...")
     texts = load_texts('../speechesdataset')
@@ -125,7 +145,7 @@ def main():
     inputfile = "../speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
-    input_val_file = "../speechesdataset/test_LM_hbush.txt"
+    input_val_file = "../speechesdataset/test_LM_obama.txt"
     with open(input_val_file, 'r', encoding='utf-8') as f:
         lmvalText = f.read()
 
@@ -141,6 +161,7 @@ def main():
     encoder = TransformerEncoder(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
     classifier = FeedforwardClassifier(n_input, n_hidden, n_output).to(device)
     unified_classifier = UnifiedClassifier(encoder, classifier).to(device)
+    print(sum(p.numel() for p in unified_classifier.parameters()), 'parameters')
     loss_function = nn.NLLLoss()
     optimizer = optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=learning_rate)
     for epoch in range(epochs_CLS):
@@ -175,44 +196,31 @@ def main():
     unified_classifier = unified_classifier.to('cpu')
     utilities = Utilities(tokenizer, unified_classifier.encoder)
     utilities.sanity_check(sentence_for_sanity_check, block_size)
-    '''
+'''
     ################################# Create the encoder and decoder models #################################
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
     print("Creating decoder models ...")
     Decoder = GPTLanguageModel(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
-    optimizer = optim.Adam(Decoder.parameters(), lr=learning_rate)
+    print(sum(p.numel() for p in Decoder.parameters()), 'parameters')
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(Decoder.parameters(), lr=learning_rate)
 
-    def run_epoch(loader, is_train):
-        """ Train or evaluate the model for one epoch. """
-        Decoder.train() if is_train else Decoder.eval()
-        total_loss = 0
-        for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            logits, loss = Decoder(xb, yb)
-            if is_train:
-                loss.backward()
-                optimizer.step()
-            total_loss += loss.item() * xb.size(0)
-        return total_loss / len(loader.dataset)
+    train_iter = iter(train_LM_loader)
 
-    # add a bar for the progress using tqdm
-    for epoch in tqdm(range(max_iters)):
-        train_loss = run_epoch(train_LM_loader, is_train=True)
-        if epoch % eval_interval == 0:
-            print('/n')
-            print(f'Epoch {epoch}, Train Loss: {train_loss:.4f}')
-            # compute perplexity on the training and validation set
-            train_perplexity = compute_perplexity(Decoder, train_LM_loader, eval_iters)
-            val_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_iters)
-            print(f'Epoch {epoch}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {val_perplexity:.4f}')
+    for iterations in range(max_iters):
+        xb, yb = next(train_iter)
+        xb = xb.to(device)
+        yb = yb.to(device)
 
-        if epoch % eval_iters == 0:
-            test_loss = run_epoch(val_LM_loader, is_train=False)
-            print(f'Epoch {epoch}, Test Loss: {test_loss:.4f}')
-            test_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_iters)
-            print('/n')
-            print(f'Epoch {epoch}, Test Perplexity: {test_perplexity:.4f}')
+        logits, loss = Decoder(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+        if iterations % eval_interval == 0 or iterations == max_iters - 1:
+            train_perplexity = compute_perplexity(Decoder, train_LM_loader, eval_interval)
+            val_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_interval)
+            print(f'Epoch {iterations}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {val_perplexity:.4f}')
 
 
 if __name__ == "__main__":
