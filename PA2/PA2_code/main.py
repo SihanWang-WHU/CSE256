@@ -97,7 +97,7 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
     total_loss = 0
     for X, Y in data_loader:
         X, Y = X.to(device), Y.to(device)
-        _, loss = decoderLMmodel(X, Y)  # your model should be computing the cross entropy loss
+        _, loss, _ = decoderLMmodel(X, Y)  # your model should be computing the cross entropy loss
         losses.append(loss.item())
         total_loss += loss.item()
         if len(losses) >= eval_iters: break
@@ -144,7 +144,10 @@ def main():
     val_CLS_dataset = SpeechesClassificationDataset(tokenizer, "../speechesdataset/test_CLS.tsv")
     val_CLS_loader = DataLoader(val_CLS_dataset, batch_size=batch_size, collate_fn=collate_batch, shuffle=True)
     sentence_for_sanity_check = "That is in Israel's interest, Palestine's interest, America's interest, and the world's interest."
-
+    sentence_for_sanity_check_decoder = (
+        'I want growth that stays, that broadens, and that touches, finally, all Americans, '
+        'form the hollows of Kentucky to the sunlit streets of Denver, from the suburbs of Chicago to the broad avenues of New York, '
+        'from the oil fields of Oklahoma to the farms of the great plains.')
     inputfile = "../speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
@@ -175,7 +178,7 @@ def main():
 
     ################################# Create the encoder and classifier models #################################
     # for the classification  task, you will train for a fixed number of epochs like this:
-
+    
     print("Creating encoder and classifier models ...")
     encoder = TransformerEncoder(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
     classifier = FeedforwardClassifier(n_input, n_hidden, n_output).to(device)
@@ -231,7 +234,7 @@ def main():
         xb = xb.to(device)
         yb = yb.to(device)
 
-        logits, loss = Decoder(xb, yb)
+        logits, loss, attn_maps = Decoder(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -248,6 +251,12 @@ def main():
             print(f'Step {iterations + 1}, Val Perplexity Obama: {test_perplexity_obama:.4f}')
             print(f'Step {iterations + 1}, Val Perplexity Wbush: {test_perplexity_wbush:.4f}')
             print(f'Step {iterations + 1}, Val Perplexity Hbush: {test_perplexity_hbush:.4f}')
+
+    # Sanity Check
+    print('sanity check ...')
+    Decoder = Decoder.to('cpu')
+    utilities = Utilities(tokenizer, Decoder)
+    utilities.sanity_check_for_decoder_models(sentence_for_sanity_check_decoder, block_size)
 
 
 if __name__ == "__main__":

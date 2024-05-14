@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 
 class Head(nn.Module):
-    """ Single element of self-focus mechanism """
+    """ Single element of self-attention mechanism """
 
     def __init__(self, dimension_size, embed_dim, sequence_length, drop_prob=0.2):
         super().__init__()
@@ -14,24 +14,20 @@ class Head(nn.Module):
         self.register_buffer('mask_lower_triangular', torch.tril(torch.ones(sequence_length, sequence_length)))
 
     def forward(self, sequence):
-        # Input shape (batch, time-step, channels)
-        # Output shape (batch, time-step, dimension size)
         batch_size, seq_len, channels = sequence.shape
         key = self.encrypt(sequence)
         query = self.decrypt(sequence)
-        # Calculate attention scores
         attention_scores = query @ key.transpose(-2, -1) * key.shape[-1] ** -0.5
         attention_scores = attention_scores.masked_fill(self.mask_lower_triangular[:seq_len, :seq_len] == 0,
                                                         float('-inf'))
         attention_scores = F.softmax(attention_scores, dim=-1)
-        # Weighted aggregation of values
         value = self.combine(sequence)
         output = attention_scores @ value
-        return output
+        return output, attention_scores
 
 
 class MultiHeadAttention(nn.Module):
-    """ Group of self-focus elements operating in parallel """
+    """ Group of self-attention elements operating in parallel """
 
     def __init__(self, count_heads, size_head, embed_dim, sequence_length, drop_prob=0.2):
         super().__init__()
@@ -39,8 +35,11 @@ class MultiHeadAttention(nn.Module):
         self.final_projection = nn.Linear(size_head * count_heads, embed_dim)
 
     def forward(self, sequence):
-        output = torch.cat([element(sequence) for element in self.cluster], dim=-1)
-        return output
+        outputs, attentions = zip(*[element(sequence) for element in self.cluster])
+        output = torch.cat(outputs, dim=-1)
+        attentions = torch.stack(attentions, dim=1)  # Stack along a new head dimension
+        attentions = attentions[:, 0, :, :]
+        return self.final_projection(output), attentions
 
 
 class FeedForward(nn.Module):
@@ -59,7 +58,7 @@ class FeedForward(nn.Module):
 
 
 class Block(nn.Module):
-    """ Transformer module: integrates communication and computation phases """
+    """ Transformer module integrating self-attention and feedforward network """
 
     def __init__(self, embed_dim, num_heads, sequence_length):
         super().__init__()
@@ -70,51 +69,37 @@ class Block(nn.Module):
         self.normalize2 = nn.LayerNorm(embed_dim)
 
     def forward(self, sequence):
-        sequence = sequence + self.attention(self.normalize1(sequence))
+        sequence_normed = self.normalize1(sequence)
+        attended_sequence, attention_maps = self.attention(sequence_normed)
+        sequence = sequence + attended_sequence
         sequence = sequence + self.transformation(self.normalize2(sequence))
-        return sequence
+        return sequence, attention_maps
 
 
 class GPTLanguageModel(nn.Module):
+    """ GPT model that returns logits, loss, and attention maps """
 
     def __init__(self, size_vocabulary, embed_dim, num_heads, num_layers, sequence_length):
         super().__init__()
         self.token_embeddings = nn.Embedding(size_vocabulary, embed_dim)
         self.position_embeddings = nn.Embedding(sequence_length, embed_dim)
-        self.blocks = nn.Sequential(
-            *[Block(embed_dim, num_heads, sequence_length) for _ in range(num_layers)])  # Renamed to blocks
+        self.blocks = nn.ModuleList([Block(embed_dim, num_heads, sequence_length) for _ in range(num_layers)])
         self.final_normalization = nn.LayerNorm(embed_dim)
         self.output_head = nn.Linear(embed_dim, size_vocabulary)
-
-        self.apply(self.initialize_weights)
-
-    def initialize_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, index, targets=None):
         batch_size, time_steps = index.shape
         token_embedding = self.token_embeddings(index)
-        position_embedding = self.position_embeddings(
-            torch.arange(time_steps, device="cuda" if torch.cuda.is_available() else "cpu"))
+        position_embedding = self.position_embeddings(torch.arange(time_steps, device=index.device))
         combined_embedding = token_embedding + position_embedding
-        processed_sequence = self.blocks(combined_embedding)  # Corrected to blocks
-        final_output = self.final_normalization(processed_sequence)
+        attentions = []
+        for block in self.blocks:
+            combined_embedding, attention_maps = block(combined_embedding)
+            attentions.append(attention_maps)
+        final_output = self.final_normalization(combined_embedding)
         logits = self.output_head(final_output)
-
-        if targets is None:
-            loss = None
-        else:
-            _, time_steps, dimension = logits.shape
-            logits = logits.view(batch_size * time_steps, dimension)
-            targets = targets.view(batch_size * time_steps)
-            loss = F.cross_entropy(logits, targets)
-
-        return logits, loss
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1)) if targets is not None else None
+        return logits, loss, torch.stack(attentions)
 
     def generate(self, index, max_new_tokens, block_size):
         for _ in range(max_new_tokens):
