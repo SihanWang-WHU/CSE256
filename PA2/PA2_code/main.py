@@ -1,12 +1,15 @@
 import os
-
 import nltk
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
+from torch.utils.data import random_split
+from transformer_encoder import TransformerEncoder, FeedforwardClassifier, UnifiedClassifier
+from utilities import Utilities
+import torch.nn as nn
+import torch.optim as optim
 
 nltk.download('punkt')
-
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
 from transformer_decoder import GPTLanguageModel
@@ -145,18 +148,34 @@ def main():
     inputfile = "../speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
-    input_val_file = "../speechesdataset/test_LM_obama.txt"
-    with open(input_val_file, 'r', encoding='utf-8') as f:
-        lmvalText = f.read()
+    input_val_file_obama = "../speechesdataset/test_LM_obama.txt"
+    with open(input_val_file_obama, 'r', encoding='utf-8') as f:
+        lmvalText_obama = f.read()
+    input_val_file_wbush = "../speechesdataset/test_LM_wbush.txt"
+    with open(input_val_file_wbush, 'r', encoding='utf-8') as f:
+        lmvalText_wbush = f.read()
+    input_val_file_hbush = "../speechesdataset/test_LM_hbush.txt"
+    with open(input_val_file_hbush, 'r', encoding='utf-8') as f:
+        lmvalText_hbush = f.read()
 
-    train_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText, block_size)
-    train_LM_loader = DataLoader(train_LM_dataset, batch_size=batch_size, shuffle=True)
-    val_LM_dataset = LanguageModelingDataset(tokenizer, lmvalText, block_size)
-    val_LM_loader = DataLoader(val_LM_dataset, batch_size=batch_size, shuffle=True)
+    LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText, block_size)
+    validation_fraction = 0.2
+    num_train = int((1.0 - validation_fraction) * len(LM_dataset))
+    num_valid = len(LM_dataset) - num_train
+    train_dataset, valid_dataset = random_split(LM_dataset, [num_train, num_valid])
+    train_LM_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    valid_LM_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
+
+    test_LM_dataset_obama = LanguageModelingDataset(tokenizer, lmvalText_obama, block_size)
+    test_LM_loader_obama = DataLoader(test_LM_dataset_obama, batch_size=batch_size, shuffle=True)
+    test_LM_dataset_wbush = LanguageModelingDataset(tokenizer, lmvalText_wbush, block_size)
+    test_LM_loader_wbush = DataLoader(test_LM_dataset_wbush, batch_size=batch_size, shuffle=True)
+    test_LM_dataset_hbush = LanguageModelingDataset(tokenizer, lmvalText_hbush, block_size)
+    test_LM_loader_hbush = DataLoader(test_LM_dataset_hbush, batch_size=batch_size, shuffle=True)
 
     ################################# Create the encoder and classifier models #################################
     # for the classification  task, you will train for a fixed number of epochs like this:
-    '''
+
     print("Creating encoder and classifier models ...")
     encoder = TransformerEncoder(vocab_size, n_embd, n_head, n_layer, block_size).to(device)
     classifier = FeedforwardClassifier(n_input, n_hidden, n_output).to(device)
@@ -196,7 +215,7 @@ def main():
     unified_classifier = unified_classifier.to('cpu')
     utilities = Utilities(tokenizer, unified_classifier.encoder)
     utilities.sanity_check(sentence_for_sanity_check, block_size)
-'''
+
     ################################# Create the encoder and decoder models #################################
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
     print("Creating decoder models ...")
@@ -217,10 +236,18 @@ def main():
         loss.backward()
         optimizer.step()
 
-        if iterations % eval_interval == 0 or iterations == max_iters - 1:
+        if iterations % eval_interval == 0:
             train_perplexity = compute_perplexity(Decoder, train_LM_loader, eval_interval)
-            val_perplexity = compute_perplexity(Decoder, val_LM_loader, eval_interval)
-            print(f'Epoch {iterations}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {val_perplexity:.4f}')
+            valid_perplexity = compute_perplexity(Decoder, valid_LM_loader, eval_interval)
+            print(
+                f'Step {iterations}, Train Perplexity: {train_perplexity:.4f}, Val Perplexity: {valid_perplexity:.4f}')
+        if iterations == max_iters - 1:
+            test_perplexity_obama = compute_perplexity(Decoder, test_LM_loader_obama, eval_interval)
+            test_perplexity_wbush = compute_perplexity(Decoder, test_LM_loader_wbush, eval_interval)
+            test_perplexity_hbush = compute_perplexity(Decoder, test_LM_loader_hbush, eval_interval)
+            print(f'Step {iterations + 1}, Val Perplexity Obama: {test_perplexity_obama:.4f}')
+            print(f'Step {iterations + 1}, Val Perplexity Wbush: {test_perplexity_wbush:.4f}')
+            print(f'Step {iterations + 1}, Val Perplexity Hbush: {test_perplexity_hbush:.4f}')
 
 
 if __name__ == "__main__":
