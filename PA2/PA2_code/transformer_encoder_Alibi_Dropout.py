@@ -5,12 +5,12 @@ import math
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embd_dim, num_heads):
+    def __init__(self, embd_dim, num_heads, dropout_rate=0.1):
         super().__init__()
         self.num_heads = num_heads
         self.embd_dim = embd_dim
+        self.dropout = nn.Dropout(dropout_rate)
 
-        # Ensure the embedding dimension is divisible by the number of heads
         assert self.embd_dim % self.num_heads == 0, "Embedding dimension must be divisible by number of heads"
 
         self.depth = self.embd_dim // self.num_heads
@@ -21,73 +21,62 @@ class MultiHeadAttention(nn.Module):
         self.dense = nn.Linear(self.embd_dim, self.embd_dim)
 
     def split_heads(self, x, batch_size):
-        # x is initially in shape (batch_size, seq_len, emb_dim)
-        # Split the emb_dim into (num_heads, depth)
         x = x.view(batch_size, -1, self.num_heads, self.depth)
-        # Permute to get dimensions (batch_size, num_heads, seq_len, depth)
         return x.permute(0, 2, 1, 3)
 
     def forward(self, q, k, v, alibi, mask=None):
         batch_size = q.size(0)
-        seq_len = q.size(1)  # Make sure this is indeed sequence length
+        seq_len = q.size(1)
 
-        # the size of q, k,v is (batch_size, num_heads, seq_len, depth)
         q = self.split_heads(self.wq(q), batch_size)
         k = self.split_heads(self.wk(k), batch_size)
         v = self.split_heads(self.wv(v), batch_size)
 
-        # Ensure calculations respect the seq_len and batch_size distinction
-        matmul_qk = torch.matmul(q, k.transpose(-2, -1))  # Heads, Batch, Seq_len
+        matmul_qk = torch.matmul(q, k.transpose(-2, -1))
         scale = torch.sqrt(torch.tensor(self.depth, dtype=torch.float32))
         scaled_attention_logits = matmul_qk / scale
-
-        # Apply AliBi (Attention with Linear Biases)
         scaled_attention_logits += alibi[:, :, :seq_len, :seq_len]
 
         if mask is not None:
             scaled_attention_logits += (mask * -1e9)
 
-        # the size of attention_weights is (batch_size, num_heads, seq_len, seq_len)
         attention_weights = F.softmax(scaled_attention_logits, dim=-1)
+        attention_weights = self.dropout(attention_weights)  # Apply dropout to the attention weights
 
         output = torch.matmul(attention_weights, v)
-
-        # Correcting the concatenate and reshape logic
         output = output.permute(0, 2, 1, 3).contiguous()
-        output = output.view(batch_size, seq_len, self.embd_dim)  # Correcting this line to use seq_len
-
-        # Final linear layer
+        output = output.view(batch_size, seq_len, self.embd_dim)
         output = self.dense(output)
         attention_weights = attention_weights[:, 0, :, :]
         return output, attention_weights
 
 
 class PositionwiseFeedforward(nn.Module):
-    def __init__(self, embd_dim, d_ff):
+    def __init__(self, embd_dim, d_ff, dropout_rate=0.1):
         super().__init__()
         self.fc1 = nn.Linear(embd_dim, d_ff)
+        self.dropout = nn.Dropout(dropout_rate)
         self.fc2 = nn.Linear(d_ff, embd_dim)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
+        x = self.dropout(x)  # Apply dropout after the first linear layer and ReLU activation
         x = self.fc2(x)
         return x
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, embd_dim, num_heads, d_ff):
+    def __init__(self, embd_dim, num_heads, d_ff, dropout_rate=0.1):
         super().__init__()
-        self.self_attn = MultiHeadAttention(embd_dim, num_heads)
-        self.feed_forward = PositionwiseFeedforward(embd_dim, d_ff)
+        self.self_attn = MultiHeadAttention(embd_dim, num_heads, dropout_rate)
+        self.feed_forward = PositionwiseFeedforward(embd_dim, d_ff, dropout_rate)
         self.norm1 = nn.LayerNorm(embd_dim)
         self.norm2 = nn.LayerNorm(embd_dim)
 
     def forward(self, src, alibi, src_mask=None):
-        # the size of the src is (seq_len, batch_size, emb_dim)
         src2 = self.norm1(src)
         src2 = src2.permute(1, 0, 2)
-        # the size of the attn_map is (batch_size, num_heads, seq_len, seq_len)
-        attn_output, attn_map = self.self_attn(src2, src2, src2, alibi, src_mask)  # capture attention map
+        attn_output, attn_map = self.self_attn(src2, src2, src2, alibi, src_mask)
         attn_output = attn_output.permute(1, 0, 2)
         src = src + attn_output
         src2 = self.norm2(src)
